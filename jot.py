@@ -2,9 +2,9 @@
 """Jot list dispatcher — active list + 7-day archive of completed items.
 
 Model:
-- Active view (`/jot`): items not marked done.
+- Active view (`/jot`): undone items + items done today (shown with green checkbox).
 - Archive view (`/jot archive`): items done within the past ARCHIVE_DAYS, newest first.
-- `done N` marks by active-view position; the item vanishes from active immediately.
+- `done N` or `done <text>` marks by position or text match; item stays visible (green) until midnight.
 - `undo N` / `undone N` restores by archive-view position. Bare `undo` restores the most recent.
 - Auto-cleanup drops items whose done_date is older than ARCHIVE_DAYS days.
 """
@@ -86,6 +86,13 @@ def active_items(data):
     return [i for i in data["items"] if not is_done(i)]
 
 
+def visible_items(data):
+    """Items for the main list view: undone + done today."""
+    today = today_date()
+    return [i for i in data["items"]
+            if not is_done(i) or item_done_date(i) == today]
+
+
 def archive_items(data):
     """Done items within the past ARCHIVE_DAYS, newest first."""
     cutoff = today_date() - timedelta(days=ARCHIVE_DAYS)
@@ -98,13 +105,15 @@ def archive_items(data):
     return result
 
 
-def cmd_list(data):
-    items = active_items(data)
+def cmd_list(data, show_numbers=False):
+    items = visible_items(data)
     if not items:
         print("Jot list is empty.")
         return
-    for item in items:
-        print(f"\u2b1c {item['text']}")
+    for i, item in enumerate(items, 1):
+        icon = "\u2705" if is_done(item) else "\u2b1c"
+        prefix = f"{i}. " if show_numbers else ""
+        print(f"{prefix}{icon} {item['text']}")
 
 
 def cmd_archive(data):
@@ -131,16 +140,29 @@ def cmd_add(data, text):
     print(f"Added: {text}")
 
 
-def resolve_active(data, number_str):
-    """Return the item at 1-based active-list position. Raises JotError on failure."""
+def resolve_visible(data, number_or_text):
+    """Return the item at 1-based visible-list position or by text match.
+    Positions match what /jot shownum displays. Raises JotError on failure."""
+    items = visible_items(data)
+    # Try numeric position first.
     try:
-        idx = int(number_str) - 1
+        idx = int(number_or_text) - 1
+        if 0 <= idx < len(items):
+            return items[idx]
+        raise JotError(f"No item at position {number_or_text}")
     except ValueError:
-        raise JotError(f"Invalid number: {number_str}")
-    items = active_items(data)
-    if idx < 0 or idx >= len(items):
-        raise JotError(f"No active item at position {number_str}")
-    return items[idx]
+        pass
+    # Fall back to case-insensitive text match (undone items only).
+    undone = [i for i in items if not is_done(i)]
+    query = number_or_text.lower()
+    matches = [i for i in undone if query in i["text"].lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        lines = [f"  {j+1}. {m['text']}" for j, m in enumerate(matches)]
+        raise JotError(f"Multiple matches for \"{number_or_text}\":\n" + "\n".join(lines)
+                       + "\nUse a more specific term or position number.")
+    raise JotError(f"No active item matching \"{number_or_text}\"")
 
 
 def resolve_archive(data, number_str):
@@ -155,9 +177,13 @@ def resolve_archive(data, number_str):
     return items[idx]
 
 
-def cmd_done(data, number_strs):
-    # Resolve all before mutating so position shifts don't break batch operations.
-    to_mark = [resolve_active(data, ns) for ns in number_strs]
+def cmd_done(data, args):
+    # If all args are numbers, treat as batch positional (e.g., done 2 3).
+    # Otherwise, join into a single text query (e.g., done test task).
+    if all(a.isdigit() for a in args):
+        to_mark = [resolve_visible(data, ns) for ns in args]
+    else:
+        to_mark = [resolve_visible(data, " ".join(args))]
     now = datetime.now(CT)
     for item in to_mark:
         item["done_date"] = now.date().isoformat()
@@ -192,7 +218,7 @@ def cmd_undo(data, number_strs):
 
 def cmd_remove(data, number_strs):
     """Permanently remove items from the active list."""
-    to_remove = [resolve_active(data, ns) for ns in number_strs]
+    to_remove = [resolve_visible(data, ns) for ns in number_strs]
     remove_ids = {item["id"] for item in to_remove}
     data["items"] = [i for i in data["items"] if i["id"] not in remove_ids]
     save(data)
@@ -205,11 +231,26 @@ def cmd_edit(data, number_str, new_text):
     if not new_text.strip():
         print("Nothing to edit to — provide new text after the position number.")
         return
-    item = resolve_active(data, number_str)
+    item = resolve_visible(data, number_str)
     old_text = item["text"]
     item["text"] = new_text
     save(data)
     print(f"Edited {number_str}: {old_text} → {new_text}")
+
+
+def cmd_help():
+    print(
+        "/jot <text>          — add a new item\n"
+        "/jot                 — show list\n"
+        "/jot shownum         — show list with position numbers\n"
+        "/jot done <N...>     — mark done by position (batch: done 3 4 6)\n"
+        "/jot done <text>     — mark done by text match\n"
+        "/jot modify <N> <text> — edit item text\n"
+        "/jot remove <N>      — permanently remove item\n"
+        "/jot undo [N]        — restore last done (or by archive position)\n"
+        "/jot archive         — show done items (past 7 days)\n"
+        "/jot help            — show this help"
+    )
 
 
 def dispatch(data, args):
@@ -219,15 +260,17 @@ def dispatch(data, args):
 
     subcmd = args[0].lower()
 
-    if subcmd == "done" and len(args) >= 2:
+    if subcmd == "help":
+        cmd_help()
+    elif subcmd == "done" and len(args) >= 2:
         cmd_done(data, args[1:])
     elif subcmd in ("undo", "undone"):
         cmd_undo(data, args[1:])
     elif subcmd in ("remove", "rm") and len(args) >= 2:
         cmd_remove(data, args[1:])
-    elif subcmd == "edit":
+    elif subcmd in ("edit", "modify"):
         if len(args) < 2:
-            print("Usage: edit <N> <new text>")
+            print("Usage: modify <N> <new text>")
         elif len(args) < 3:
             print("Provide new text after the position number.")
         else:
@@ -236,6 +279,8 @@ def dispatch(data, args):
         cmd_archive(data)
     elif subcmd in ("list", "show"):
         cmd_list(data)
+    elif subcmd == "shownum":
+        cmd_list(data, show_numbers=True)
     else:
         cmd_add(data, " ".join(args))
 
