@@ -11,6 +11,7 @@ Model:
 
 import json
 import os
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -128,6 +129,31 @@ def cmd_archive(data):
         print(f"{i}. \u2705 {item['text']}{suffix}")
 
 
+NF_STACK = os.path.expanduser("~/skill-backends/noteflow/nf-stack.py")
+
+
+def _push_to_stack(text):
+    """Push a custom item to the Mission Control stack (bottom)."""
+    try:
+        subprocess.run(
+            ["python3", NF_STACK, "add", text],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass  # best-effort
+
+
+def _remove_from_stack(text):
+    """Remove the exact-title match from the Mission Control stack."""
+    try:
+        subprocess.run(
+            ["python3", NF_STACK, "remove", text],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass  # best-effort
+
+
 def cmd_add(data, text):
     item_id = uuid.uuid4().hex[:8]
     item = {
@@ -137,6 +163,7 @@ def cmd_add(data, text):
     }
     data["items"].append(item)
     save(data)
+    _push_to_stack(text)
     print(f"Added: {text}")
 
 
@@ -190,6 +217,7 @@ def cmd_done(data, args):
         item["done_at"] = now.isoformat()
     save(data)
     for item in to_mark:
+        _remove_from_stack(item["text"])
         print(f"Done: {item['text']}")
 
 

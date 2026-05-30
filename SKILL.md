@@ -1,9 +1,6 @@
 ---
 name: jot
 description: "Ad-hoc quick list with daily auto-cleanup of done items. Trigger: /jot. Dispatched deterministically via the jot-dispatch plugin — the LLM is NOT involved in running the script."
-command-dispatch: tool
-command-tool: jot_dispatch
-command-arg-mode: raw
 ---
 
 # Jot — Ad Hoc Quick List
@@ -45,4 +42,12 @@ All data access must go through `jot.py` (or the `jot-*.py` helpers in the same 
 
 ## Response Handling
 
-**Relay script output verbatim.** Do not summarize, rephrase, or add commentary.
+**CRITICAL — your ENTIRE response must be the script output, copied verbatim. Nothing else.**
+
+- Do NOT summarize ("Your list includes X along with several other tasks")
+- Do NOT rephrase or paraphrase any part of the output
+- Do NOT add preamble ("Here's your list:", "Sure!", "Let me know if...")
+- Do NOT add commentary or follow-up suggestions
+- Do NOT omit items or truncate the list
+
+If the script prints 20 lines, your message is those exact 20 lines. Zero additions, zero removals.
